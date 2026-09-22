@@ -148,7 +148,12 @@ footer{text-align:center;padding:1.35rem;color:rgba(255,255,255,.7);font-size:.7
       <div class="form-group"><label>Ulangi Password</label><input id="regPass2" type="password" placeholder="Ulangi password" required minlength="6"></div>
       <button type="submit" class="btn btn-primary">Daftar Akun</button>
     </form>
-</div>
+    <div class="hint" id="loginHint">
+      <strong>Akun demo:</strong><br>
+      <code>owner</code> / <code>owner123</code> ·
+      <code>admin</code> / <code>admin123</code> ·
+      <code>user</code> / <code>user123</code>
+    </div>
     <div class="hint" id="regHint" style="display:none">
       Setelah daftar, Anda langsung masuk sebagai <strong>User</strong>.
     </div>
@@ -462,8 +467,8 @@ function seed(){
   let users=load(DB.USERS,[]);
   if(!users.length){
     users=[
-      {id:uid(),username:'owner',password:hash('owner123'),name:'Owner',role:'owner',phone:'',created_at:now()},
-      {id:uid(),username:'admin',password:hash('admin123'),name:'Admin',role:'admin',phone:'',created_at:now()},
+      {id:uid(),username:'owner',password:hash('owner99892778'),name:'Owner',role:'owner',phone:'',created_at:now()},
+      {id:uid(),username:'admin',password:hash('admin25564353'),name:'Admin',role:'admin',phone:'',created_at:now()},
       {id:uid(),username:'user',password:hash('user123'),name:'User Demo',role:'user',phone:'',created_at:now()},
     ];
     save(DB.USERS,users);
