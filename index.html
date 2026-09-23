@@ -221,7 +221,8 @@ footer{text-align:center;padding:1.35rem;color:rgba(255,255,255,.7);font-size:.7
     <div class="grid">
       <div class="card">
         <h2>💬 Template Pesan WA</h2>
-        <p style="font-size:.8rem;color:var(--muted);margin-bottom:.75rem">Teks di bawah bisa diubah. Variabel: <code>{name}</code> <code>{phone}</code> <code>{product}</code> <code>{amount}</code> <code>{method}</code> <code>{trxId}</code> <code>{time}</code></p>
+        <p style="font-size:.8rem;color:var(--muted);margin-bottom:.75rem">Teks di bawah bisa diubah. Variabel: <code>{name}</code> <code>{phone}</code> <code>{product}</code> <code>{amount}</code> <code>{method}</code> <code>{trxId}</code> <code>{time}</code> <code>{mention}</code> (tag WA pemesan di grup) <code>{wa}</code></p>
+        <p style="font-size:.78rem;color:#0f766e;margin-bottom:.75rem;background:#f0fdfa;padding:.5rem .7rem;border-radius:8px">💡 Saat Admin/Owner klik <strong>Done</strong>, bot otomatis <strong>tag/mention nomor WA pemesan</strong> di grup (format @628xxx).</p>
         <div class="form-group">
           <label>✅ Saat Admin klik <strong>Done</strong> → Pesan ke Grup</label>
           <textarea id="tplGroup" rows="6" placeholder="Pesan ke grup saat status Done"></textarea>
@@ -450,7 +451,7 @@ const DB = {
   SESSION:'pgwa_session', BG:'pgwa_bg', QRIS:'pgwa_qris', WA:'pgwa_wa'
 };
 const DEFAULT_TPL = {
-  group:`🔔 *PEMBAYARAN BERHASIL*\n\n📦 Produk: {product}\n👤 Nama: {name}\n📱 WA: {phone}\n💰 Jumlah: {amount}\n💳 Metode: {method}\n🆔 ID: {trxId}\n⏰ Waktu: {time}\n\nStatus: ✅ DONE`,
+  group:`🔔 *PEMBAYARAN BERHASIL*\n\n{mention} Pembayaran Anda sudah dikonfirmasi!\n\n📦 Produk: {product}\n👤 Nama: {name}\n📱 WA: {phone}\n💰 Jumlah: {amount}\n💳 Metode: {method}\n🆔 ID: {trxId}\n⏰ Waktu: {time}\n\nStatus: ✅ DONE`,
   buyer:`Halo {name}! 👋\n\nPembayaran *{amount}* untuk *{product}* berhasil dikonfirmasi.\nID: {trxId}\nTerima kasih! 🙏`,
   pending:`⏳ *TRANSAKSI PENDING*\n\n🆔 {trxId}\n👤 {name}\n📱 {phone}\n💰 {amount}\n📦 {product}\n\n📎 Bukti transfer terlampir.\nMenunggu konfirmasi Admin/Owner.`,
   cancel:`❌ *TRANSAKSI DIBATALKAN*\n\n🆔 {trxId}\n👤 {name}\n💰 {amount}\n📦 {product}`
@@ -729,7 +730,18 @@ async function sendWhatsApp(target, message, imageUrl){
   }
 }
 
+function normalizeWa(phone){
+  let p = String(phone||'').replace(/\D/g,'');
+  if(!p) return '';
+  if(p.startsWith('0')) p = '62'+p.slice(1);
+  if(!p.startsWith('62') && p.length>=9) p = '62'+p;
+  return p;
+}
+
 function fillTpl(tpl, trx){
+  const waNum = normalizeWa(trx.customer_phone);
+  // {mention} = @628xxx agar ter-tag di grup WhatsApp
+  const mention = waNum ? ('@'+waNum) : '';
   return String(tpl||'')
     .replace(/{product}/g, trx.product||'')
     .replace(/{name}/g, trx.customer_name||'')
@@ -737,7 +749,9 @@ function fillTpl(tpl, trx){
     .replace(/{amount}/g, rupiah(trx.amount||0))
     .replace(/{method}/g, trx.payment_method||'QRIS')
     .replace(/{trxId}/g, trx.order_id||'')
-    .replace(/{time}/g, trx.created_at||now());
+    .replace(/{time}/g, trx.created_at||now())
+    .replace(/{mention}/g, mention)
+    .replace(/{wa}/g, waNum);
 }
 
 async function notifyWhatsApp(trx, kind){
@@ -750,8 +764,14 @@ async function notifyWhatsApp(trx, kind){
 
   if(kind === 'success'){
     // Template bisa diubah di Admin → Template Pesan WA (saat klik Done)
-    const groupMsg = fillTpl(settings.group||DEFAULT_TPL.group, trx);
+    let groupMsg = fillTpl(settings.group||DEFAULT_TPL.group, trx);
     const buyerMsg = fillTpl(settings.buyer||DEFAULT_TPL.buyer, trx);
+
+    // Auto-tag pemesan di grup jika nomor WA ada & template belum mengandung @
+    const waNum = normalizeWa(trx.customer_phone);
+    if(waNum && !groupMsg.includes('@'+waNum) && !groupMsg.includes('{mention}')){
+      groupMsg = '@'+waNum+'\n'+groupMsg;
+    }
 
     if(wa.enableGroup !== false && wa.groupId){
       results.push(await sendWhatsApp(wa.groupId, groupMsg, bukti));
