@@ -595,6 +595,17 @@ function saveWaConfig(){
   alert('✅ Pengaturan bot WhatsApp tersimpan');
 }
 
+function dataUrlToBlob(dataUrl){
+  try{
+    const parts = dataUrl.split(',');
+    const mime = (parts[0].match(/:(.*?);/)||[])[1] || 'image/jpeg';
+    const bstr = atob(parts[1] || '');
+    const u8 = new Uint8Array(bstr.length);
+    for(let i=0;i<bstr.length;i++) u8[i]=bstr.charCodeAt(i);
+    return new Blob([u8], {type: mime});
+  }catch(e){ return null; }
+}
+
 async function sendWhatsApp(target, message, imageUrl){
   const wa = load(DB.WA, {});
   if(!wa.token){
@@ -613,9 +624,20 @@ async function sendWhatsApp(target, message, imageUrl){
     form.append('target', tgt);
     form.append('message', message);
     form.append('countryCode', '62');
-    if(imageUrl && imageUrl.startsWith('http')){
-      form.append('url', imageUrl);
-      form.append('filename', 'bukti.jpg');
+
+    // Kirim gambar: public URL atau data URL (bukti transfer dari browser)
+    if(imageUrl){
+      if(imageUrl.startsWith('http')){
+        form.append('url', imageUrl);
+        form.append('filename', 'bukti.jpg');
+      } else if(imageUrl.startsWith('data:image')){
+        const blob = dataUrlToBlob(imageUrl);
+        if(blob){
+          const ext = (blob.type||'image/jpeg').split('/')[1] || 'jpg';
+          form.append('file', blob, 'bukti.'+ext);
+          form.append('filename', 'bukti.'+ext);
+        }
+      }
     }
 
     const res = await fetch('https://api.fonnte.com/send', {
@@ -651,6 +673,7 @@ async function notifyWhatsApp(trx, kind){
   if(!wa.token) return;
   const settings = load(DB.SETTINGS, DEFAULT_TPL);
   const results = [];
+  const bukti = trx.bukti_data || null; // data URL bukti transfer
 
   if(kind === 'success'){
     const groupMsg = (settings.group||DEFAULT_TPL.group)
@@ -662,15 +685,17 @@ async function notifyWhatsApp(trx, kind){
       .replace(/{product}/g,trx.product).replace(/{trxId}/g,trx.order_id);
 
     if(wa.enableGroup !== false && wa.groupId){
-      results.push(await sendWhatsApp(wa.groupId, groupMsg, null));
+      // Kirim ke grup + lampirkan bukti (jika ada)
+      results.push(await sendWhatsApp(wa.groupId, groupMsg, bukti));
     }
     if(wa.enableBuyer !== false && trx.customer_phone){
       results.push(await sendWhatsApp(trx.customer_phone, buyerMsg, null));
     }
   } else if(kind === 'pending'){
-    const msg = `⏳ *TRANSAKSI PENDING*\n\n🆔 ${trx.order_id}\n👤 ${trx.customer_name}\n📱 ${trx.customer_phone}\n💰 ${rupiah(trx.amount)}\n📦 ${trx.product}\n\nMenunggu konfirmasi Admin/Owner.`;
+    const msg = `⏳ *TRANSAKSI PENDING*\n\n🆔 ${trx.order_id}\n👤 ${trx.customer_name}\n📱 ${trx.customer_phone}\n💰 ${rupiah(trx.amount)}\n📦 ${trx.product}\n\n📎 Bukti transfer terlampir.\nMenunggu konfirmasi Admin/Owner.`;
     if(wa.enableGroup !== false && wa.groupId){
-      results.push(await sendWhatsApp(wa.groupId, msg, null));
+      // Kirim ke grup + lampirkan bukti transfer
+      results.push(await sendWhatsApp(wa.groupId, msg, bukti));
     }
   } else if(kind === 'cancel'){
     const msg = `❌ *TRANSAKSI DIBATALKAN*\n\n🆔 ${trx.order_id}\n👤 ${trx.customer_name}\n💰 ${rupiah(trx.amount)}`;
