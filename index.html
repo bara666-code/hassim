@@ -222,7 +222,7 @@ footer{text-align:center;padding:1.35rem;color:rgba(255,255,255,.7);font-size:.7
       <div class="card">
         <h2>💬 Template Pesan WA</h2>
         <p style="font-size:.8rem;color:var(--muted);margin-bottom:.75rem">Teks di bawah bisa diubah. Variabel: <code>{name}</code> <code>{phone}</code> <code>{product}</code> <code>{amount}</code> <code>{method}</code> <code>{trxId}</code> <code>{time}</code> <code>{mention}</code> (tag WA pemesan di grup) <code>{wa}</code></p>
-        <p style="font-size:.78rem;color:#0f766e;margin-bottom:.75rem;background:#f0fdfa;padding:.5rem .7rem;border-radius:8px">💡 Saat Admin/Owner klik <strong>Done</strong>, bot otomatis <strong>tag/mention nomor WA pemesan</strong> di grup (format @628xxx).</p>
+        <p style="font-size:.78rem;color:#0f766e;margin-bottom:.75rem;background:#f0fdfa;padding:.5rem .7rem;border-radius:8px">💡 Format tag pemesan bisa Anda ubah sendiri di field <strong>🏷️ Format tag pemesan</strong> di bawah. Kosongkan field itu jika tidak ingin tag.</p>
         <div class="form-group">
           <label>✅ Saat Admin klik <strong>Done</strong> → Pesan ke Grup</label>
           <textarea id="tplGroup" rows="6" placeholder="Pesan ke grup saat status Done"></textarea>
@@ -230,6 +230,11 @@ footer{text-align:center;padding:1.35rem;color:rgba(255,255,255,.7);font-size:.7
         <div class="form-group">
           <label>✅ Saat Admin klik <strong>Done</strong> → Pesan ke Pembeli</label>
           <textarea id="tplBuyer" rows="4" placeholder="Pesan ke pembeli saat status Done"></textarea>
+        </div>
+        <div class="form-group">
+          <label>🏷️ Format tag pemesan di grup (saat Done)</label>
+          <textarea id="tplTag" rows="2" placeholder="Contoh: {mention} atau Halo {mention} 👋"></textarea>
+          <p style="font-size:.72rem;color:var(--muted);margin-top:.25rem">Pakai <code>{mention}</code> = @628xxx · <code>{wa}</code> = nomor saja · <code>{name}</code> = nama pemesan. Kosongkan jika tidak ingin auto-tag.</p>
         </div>
         <div class="form-group">
           <label>⏳ Saat user bayar (Pending) → Pesan ke Grup</label>
@@ -451,8 +456,9 @@ const DB = {
   SESSION:'pgwa_session', BG:'pgwa_bg', QRIS:'pgwa_qris', WA:'pgwa_wa'
 };
 const DEFAULT_TPL = {
-  group:`🔔 *PEMBAYARAN BERHASIL*\n\n{mention} Pembayaran Anda sudah dikonfirmasi!\n\n📦 Produk: {product}\n👤 Nama: {name}\n📱 WA: {phone}\n💰 Jumlah: {amount}\n💳 Metode: {method}\n🆔 ID: {trxId}\n⏰ Waktu: {time}\n\nStatus: ✅ DONE`,
+  group:`🔔 *PEMBAYARAN BERHASIL*\n\n📦 Produk: {product}\n👤 Nama: {name}\n📱 WA: {phone}\n💰 Jumlah: {amount}\n💳 Metode: {method}\n🆔 ID: {trxId}\n⏰ Waktu: {time}\n\nStatus: ✅ DONE`,
   buyer:`Halo {name}! 👋\n\nPembayaran *{amount}* untuk *{product}* berhasil dikonfirmasi.\nID: {trxId}\nTerima kasih! 🙏`,
+  tag:`{mention}`,
   pending:`⏳ *TRANSAKSI PENDING*\n\n🆔 {trxId}\n👤 {name}\n📱 {phone}\n💰 {amount}\n📦 {product}\n\n📎 Bukti transfer terlampir.\nMenunggu konfirmasi Admin/Owner.`,
   cancel:`❌ *TRANSAKSI DIBATALKAN*\n\n🆔 {trxId}\n👤 {name}\n💰 {amount}\n📦 {product}`
 };
@@ -767,10 +773,16 @@ async function notifyWhatsApp(trx, kind){
     let groupMsg = fillTpl(settings.group||DEFAULT_TPL.group, trx);
     const buyerMsg = fillTpl(settings.buyer||DEFAULT_TPL.buyer, trx);
 
-    // Auto-tag pemesan di grup jika nomor WA ada & template belum mengandung @
-    const waNum = normalizeWa(trx.customer_phone);
-    if(waNum && !groupMsg.includes('@'+waNum) && !groupMsg.includes('{mention}')){
-      groupMsg = '@'+waNum+'\n'+groupMsg;
+    // Teks tag bisa diubah di Admin (field "Format tag pemesan")
+    // Kosongkan field tag jika tidak ingin mention
+    const tagRaw = (settings.tag !== undefined && settings.tag !== null) ? settings.tag : DEFAULT_TPL.tag;
+    const tagLine = fillTpl(tagRaw, trx).trim();
+    if(tagLine){
+      // Jangan dobel jika template group sudah berisi nomor yang sama
+      const waNum = normalizeWa(trx.customer_phone);
+      if(!waNum || !groupMsg.includes('@'+waNum)){
+        groupMsg = tagLine + '\n' + groupMsg;
+      }
     }
 
     if(wa.enableGroup !== false && wa.groupId){
@@ -1039,6 +1051,8 @@ function loadAdmin(){
   const s=load(DB.SETTINGS,DEFAULT_TPL);
   document.getElementById('tplGroup').value=s.group||DEFAULT_TPL.group;
   document.getElementById('tplBuyer').value=s.buyer||DEFAULT_TPL.buyer;
+  const tt=document.getElementById('tplTag');
+  if(tt) tt.value = (s.tag !== undefined && s.tag !== null) ? s.tag : DEFAULT_TPL.tag;
   const tp=document.getElementById('tplPending');
   const tc=document.getElementById('tplCancel');
   if(tp) tp.value=s.pending||DEFAULT_TPL.pending;
@@ -1055,10 +1069,11 @@ function saveTemplates(){
   save(DB.SETTINGS,{
     group: document.getElementById('tplGroup').value,
     buyer: document.getElementById('tplBuyer').value,
+    tag: (document.getElementById('tplTag')||{}).value ?? DEFAULT_TPL.tag,
     pending: (document.getElementById('tplPending')||{}).value || DEFAULT_TPL.pending,
     cancel: (document.getElementById('tplCancel')||{}).value || DEFAULT_TPL.cancel
   });
-  alert('✅ Template tersimpan. Teks akan dipakai saat Admin klik Done / Cancel / user bayar.');
+  alert('✅ Template tersimpan. Teks & format tag akan dipakai saat Admin klik Done / Cancel / user bayar.');
 }
 function clearLogs(){
   if(currentUser.role!=='owner') return alert('Hanya Owner yang bisa menghapus log');
