@@ -221,8 +221,23 @@ footer{text-align:center;padding:1.35rem;color:rgba(255,255,255,.7);font-size:.7
     <div class="grid">
       <div class="card">
         <h2>💬 Template Pesan WA</h2>
-        <div class="form-group"><label>Pesan ke Grup</label><textarea id="tplGroup" rows="5"></textarea></div>
-        <div class="form-group"><label>Pesan ke Pembeli</label><textarea id="tplBuyer" rows="4"></textarea></div>
+        <p style="font-size:.8rem;color:var(--muted);margin-bottom:.75rem">Teks di bawah bisa diubah. Variabel: <code>{name}</code> <code>{phone}</code> <code>{product}</code> <code>{amount}</code> <code>{method}</code> <code>{trxId}</code> <code>{time}</code></p>
+        <div class="form-group">
+          <label>✅ Saat Admin klik <strong>Done</strong> → Pesan ke Grup</label>
+          <textarea id="tplGroup" rows="6" placeholder="Pesan ke grup saat status Done"></textarea>
+        </div>
+        <div class="form-group">
+          <label>✅ Saat Admin klik <strong>Done</strong> → Pesan ke Pembeli</label>
+          <textarea id="tplBuyer" rows="4" placeholder="Pesan ke pembeli saat status Done"></textarea>
+        </div>
+        <div class="form-group">
+          <label>⏳ Saat user bayar (Pending) → Pesan ke Grup</label>
+          <textarea id="tplPending" rows="5" placeholder="Pesan pending + bukti"></textarea>
+        </div>
+        <div class="form-group">
+          <label>❌ Saat Admin/User klik <strong>Cancel</strong> → Pesan ke Grup</label>
+          <textarea id="tplCancel" rows="3" placeholder="Pesan dibatalkan"></textarea>
+        </div>
         <button class="btn btn-primary" onclick="saveTemplates()">Simpan Template</button>
       </div>
       <div class="card">
@@ -435,8 +450,10 @@ const DB = {
   SESSION:'pgwa_session', BG:'pgwa_bg', QRIS:'pgwa_qris', WA:'pgwa_wa'
 };
 const DEFAULT_TPL = {
-  group:`🔔 *PEMBAYARAN BARU*\n\n📦 Produk: {product}\n👤 Nama: {name}\n📱 WA: {phone}\n💰 Jumlah: {amount}\n💳 Metode: {method}\n🆔 ID: {trxId}\n⏰ Waktu: {time}\n\nStatus: ✅ BERHASIL`,
-  buyer:`Halo {name}! 👋\n\nPembayaran *{amount}* untuk *{product}* berhasil.\nID: {trxId}\nTerima kasih! 🙏`
+  group:`🔔 *PEMBAYARAN BERHASIL*\n\n📦 Produk: {product}\n👤 Nama: {name}\n📱 WA: {phone}\n💰 Jumlah: {amount}\n💳 Metode: {method}\n🆔 ID: {trxId}\n⏰ Waktu: {time}\n\nStatus: ✅ DONE`,
+  buyer:`Halo {name}! 👋\n\nPembayaran *{amount}* untuk *{product}* berhasil dikonfirmasi.\nID: {trxId}\nTerima kasih! 🙏`,
+  pending:`⏳ *TRANSAKSI PENDING*\n\n🆔 {trxId}\n👤 {name}\n📱 {phone}\n💰 {amount}\n📦 {product}\n\n📎 Bukti transfer terlampir.\nMenunggu konfirmasi Admin/Owner.`,
+  cancel:`❌ *TRANSAKSI DIBATALKAN*\n\n🆔 {trxId}\n👤 {name}\n💰 {amount}\n📦 {product}`
 };
 const PRESETS = [
   {name:'Teal',url:''},
@@ -606,6 +623,39 @@ function dataUrlToBlob(dataUrl){
   }catch(e){ return null; }
 }
 
+/** Upload data-URL / Blob ke host publik agar Fonnte bisa ambil via URL */
+async function uploadBuktiToPublic(imageData){
+  if(!imageData) return null;
+  if(imageData.startsWith('http')) return imageData;
+  const blob = imageData.startsWith('data:') ? dataUrlToBlob(imageData) : null;
+  if(!blob) return null;
+  const ext = (blob.type||'image/jpeg').split('/')[1] || 'jpg';
+  const file = new File([blob], 'bukti.'+ext, {type: blob.type||'image/jpeg'});
+
+  // 1) Coba catbox.moe (gratis, tanpa API key)
+  try{
+    const fd = new FormData();
+    fd.append('reqtype', 'fileupload');
+    fd.append('fileToUpload', file);
+    const r = await fetch('https://catbox.moe/user/api.php', {method:'POST', body:fd});
+    const text = (await r.text()).trim();
+    if(r.ok && text.startsWith('http')) return text;
+  }catch(e){ /* lanjut fallback */ }
+
+  // 2) Fallback: litterbox.catbox.moe (temporary 72 jam)
+  try{
+    const fd = new FormData();
+    fd.append('reqtype', 'fileupload');
+    fd.append('time', '72h');
+    fd.append('fileToUpload', file);
+    const r = await fetch('https://litterbox.catbox.moe/resources/internals/api.php', {method:'POST', body:fd});
+    const text = (await r.text()).trim();
+    if(r.ok && text.startsWith('http')) return text;
+  }catch(e){ /* ignore */ }
+
+  return null;
+}
+
 async function sendWhatsApp(target, message, imageUrl){
   const wa = load(DB.WA, {});
   if(!wa.token){
@@ -625,18 +675,30 @@ async function sendWhatsApp(target, message, imageUrl){
     form.append('message', message);
     form.append('countryCode', '62');
 
-    // Kirim gambar: public URL atau data URL (bukti transfer dari browser)
+    // Siapkan gambar bukti untuk dikirim ke grup
+    let publicUrl = null;
+    let hasImage = false;
     if(imageUrl){
       if(imageUrl.startsWith('http')){
-        form.append('url', imageUrl);
-        form.append('filename', 'bukti.jpg');
+        publicUrl = imageUrl;
       } else if(imageUrl.startsWith('data:image')){
-        const blob = dataUrlToBlob(imageUrl);
-        if(blob){
-          const ext = (blob.type||'image/jpeg').split('/')[1] || 'jpg';
-          form.append('file', blob, 'bukti.'+ext);
-          form.append('filename', 'bukti.'+ext);
+        // Upload dulu ke host publik (Fonnte butuh URL publik)
+        publicUrl = await uploadBuktiToPublic(imageUrl);
+        // Jika upload gagal, coba kirim langsung via parameter file
+        if(!publicUrl){
+          const blob = dataUrlToBlob(imageUrl);
+          if(blob){
+            const ext = (blob.type||'image/jpeg').split('/')[1] || 'jpg';
+            form.append('file', blob, 'bukti.'+ext);
+            form.append('filename', 'bukti.'+ext);
+            hasImage = true;
+          }
         }
+      }
+      if(publicUrl){
+        form.append('url', publicUrl);
+        form.append('filename', 'bukti.jpg');
+        hasImage = true;
       }
     }
 
@@ -652,7 +714,7 @@ async function sendWhatsApp(target, message, imageUrl){
     logs.unshift({
       id: Date.now(),
       target: tgt,
-      message: (imageUrl?'[FOTO] ':'') + message.slice(0,120),
+      message: (hasImage?'[FOTO] ':'') + message.slice(0,120),
       status: ok ? 'success' : 'failed',
       response: JSON.stringify(data).slice(0,200),
       created_at: now()
@@ -667,6 +729,17 @@ async function sendWhatsApp(target, message, imageUrl){
   }
 }
 
+function fillTpl(tpl, trx){
+  return String(tpl||'')
+    .replace(/{product}/g, trx.product||'')
+    .replace(/{name}/g, trx.customer_name||'')
+    .replace(/{phone}/g, trx.customer_phone||'')
+    .replace(/{amount}/g, rupiah(trx.amount||0))
+    .replace(/{method}/g, trx.payment_method||'QRIS')
+    .replace(/{trxId}/g, trx.order_id||'')
+    .replace(/{time}/g, trx.created_at||now());
+}
+
 async function notifyWhatsApp(trx, kind){
   // kind: 'pending' | 'success' | 'cancel'
   const wa = load(DB.WA, {});
@@ -676,29 +749,23 @@ async function notifyWhatsApp(trx, kind){
   const bukti = trx.bukti_data || null; // data URL bukti transfer
 
   if(kind === 'success'){
-    const groupMsg = (settings.group||DEFAULT_TPL.group)
-      .replace(/{product}/g,trx.product).replace(/{name}/g,trx.customer_name)
-      .replace(/{phone}/g,trx.customer_phone).replace(/{amount}/g,rupiah(trx.amount))
-      .replace(/{method}/g,'QRIS').replace(/{trxId}/g,trx.order_id).replace(/{time}/g,trx.created_at||now());
-    const buyerMsg = (settings.buyer||DEFAULT_TPL.buyer)
-      .replace(/{name}/g,trx.customer_name).replace(/{amount}/g,rupiah(trx.amount))
-      .replace(/{product}/g,trx.product).replace(/{trxId}/g,trx.order_id);
+    // Template bisa diubah di Admin → Template Pesan WA (saat klik Done)
+    const groupMsg = fillTpl(settings.group||DEFAULT_TPL.group, trx);
+    const buyerMsg = fillTpl(settings.buyer||DEFAULT_TPL.buyer, trx);
 
     if(wa.enableGroup !== false && wa.groupId){
-      // Kirim ke grup + lampirkan bukti (jika ada)
       results.push(await sendWhatsApp(wa.groupId, groupMsg, bukti));
     }
     if(wa.enableBuyer !== false && trx.customer_phone){
       results.push(await sendWhatsApp(trx.customer_phone, buyerMsg, null));
     }
   } else if(kind === 'pending'){
-    const msg = `⏳ *TRANSAKSI PENDING*\n\n🆔 ${trx.order_id}\n👤 ${trx.customer_name}\n📱 ${trx.customer_phone}\n💰 ${rupiah(trx.amount)}\n📦 ${trx.product}\n\n📎 Bukti transfer terlampir.\nMenunggu konfirmasi Admin/Owner.`;
+    const msg = fillTpl(settings.pending||DEFAULT_TPL.pending, trx);
     if(wa.enableGroup !== false && wa.groupId){
-      // Kirim ke grup + lampirkan bukti transfer
       results.push(await sendWhatsApp(wa.groupId, msg, bukti));
     }
   } else if(kind === 'cancel'){
-    const msg = `❌ *TRANSAKSI DIBATALKAN*\n\n🆔 ${trx.order_id}\n👤 ${trx.customer_name}\n💰 ${rupiah(trx.amount)}`;
+    const msg = fillTpl(settings.cancel||DEFAULT_TPL.cancel, trx);
     if(wa.enableGroup !== false && wa.groupId){
       results.push(await sendWhatsApp(wa.groupId, msg, null));
     }
@@ -952,6 +1019,10 @@ function loadAdmin(){
   const s=load(DB.SETTINGS,DEFAULT_TPL);
   document.getElementById('tplGroup').value=s.group||DEFAULT_TPL.group;
   document.getElementById('tplBuyer').value=s.buyer||DEFAULT_TPL.buyer;
+  const tp=document.getElementById('tplPending');
+  const tc=document.getElementById('tplCancel');
+  if(tp) tp.value=s.pending||DEFAULT_TPL.pending;
+  if(tc) tc.value=s.cancel||DEFAULT_TPL.cancel;
   // Tombol Hapus Log hanya Owner
   const btnClear=document.querySelector('button[onclick="clearLogs()"]');
   if(btnClear) btnClear.style.display = currentUser.role==='owner' ? '' : 'none';
@@ -960,7 +1031,15 @@ function loadAdmin(){
   if(!logs.length){box.innerHTML='<p style="color:#94a3b8">Belum ada log</p>';return}
   box.innerHTML=logs.map(l=>`<div class="log-item"><strong>${esc(l.created_at)}</strong> → ${esc(l.target)}<br>${esc(l.status)} — ${esc((l.message||'').slice(0,100))}...</div>`).join('');
 }
-function saveTemplates(){save(DB.SETTINGS,{group:document.getElementById('tplGroup').value,buyer:document.getElementById('tplBuyer').value});alert('✅ Template tersimpan')}
+function saveTemplates(){
+  save(DB.SETTINGS,{
+    group: document.getElementById('tplGroup').value,
+    buyer: document.getElementById('tplBuyer').value,
+    pending: (document.getElementById('tplPending')||{}).value || DEFAULT_TPL.pending,
+    cancel: (document.getElementById('tplCancel')||{}).value || DEFAULT_TPL.cancel
+  });
+  alert('✅ Template tersimpan. Teks akan dipakai saat Admin klik Done / Cancel / user bayar.');
+}
 function clearLogs(){
   if(currentUser.role!=='owner') return alert('Hanya Owner yang bisa menghapus log');
   if(!confirm('Hapus semua log?'))return;
